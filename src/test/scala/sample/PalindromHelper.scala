@@ -3,22 +3,20 @@ package sample
 import com.typesafe.scalalogging.StrictLogging
 import gnieh.diffson.Pointer
 import gnieh.diffson.sprayJson._
+import io.gatling.commons.validation.{Failure, Success, Validation}
 import io.gatling.core.Predef._
 import io.gatling.core.action.builder.{ActionBuilder, SessionHookBuilder}
+import io.gatling.core.check.DefaultFindCheckBuilder
+import io.gatling.core.check.extractor.string.BodyStringCheckType
 import io.gatling.core.session.{Expression, Session}
 import io.gatling.core.structure.ChainBuilder
 import io.gatling.http.Predef._
 import io.gatling.http.action.ws._
 import io.gatling.http.request.builder.HttpRequestBuilder
+import spray.json.DefaultJsonProtocol._
 import spray.json.lenses.JsonLenses.{field, set, _}
 import spray.json.lenses.{Id, Lens}
-import spray.json.{JsNumber, JsObject, JsValue, JsonParser, JsonWriter}
-import spray.json._
-import DefaultJsonProtocol._
-import io.gatling.commons.validation.{Failure, Success, Validation}
-import io.gatling.core.check.DefaultFindCheckBuilder
-import io.gatling.core.check.extractor.string.BodyStringCheckType
-import lenses.JsonLenses._
+import spray.json.{JsNumber, JsObject, JsValue, JsonParser, JsonWriter, _}
 
 import scala.concurrent.duration._
 import scala.util.Try
@@ -27,6 +25,8 @@ trait PalindromHelper extends StrictLogging {
 
   val viewModelKey: String = "viewModel"
   val viewModel: Session => JsObject = _ (viewModelKey).as[Try[JsObject]].get
+//  val viewModel1: Session => JsArray = _ (viewModelKey).as[Try[JsArray]].get
+//  viewModel1(session).elements.last.asInstanceOf[JsObject].getFields("value").head
   val patchKey: String = "patch"
   val patchEl: Expression[String] = _ (patchKey).validate[String]
   val serverVersionPath: String = "_ver#s"
@@ -37,10 +37,10 @@ trait PalindromHelper extends StrictLogging {
   def openPage(pagePath: Expression[String]): HttpRequestBuilder =
     http(s => pagePath(s).map("open " + _))
       .get(pagePath)
-      .header("Accept", "application/json")
+      .header("Accept", "application/json-patch+json")
       .header("X-Referer", sessionEl)
       .check(bodyString
-        .transform(s => Try(JsonParser(s)))
+        .transform(s => Try(Try(JsonParser(s)).asInstanceOf[Try[JsArray]].get.elements.last.asJsObject().getFields("value").head))
         .saveAs(viewModelKey)
       )
 
@@ -103,11 +103,26 @@ trait PalindromHelper extends StrictLogging {
     //validatePatch(true, ws.checkTextMessage("Checking messages").check(regex(".*")), patchName)
     ws("send changes")
       .sendText(s => {
-        //logger.debug("sending patch: " + patchEl(s))
+        logger.debug("sending patch: " + patchEl(s))
         patchEl(s)
       })
+      //.await(1 second)(validatePatch(true, bodyString, patchName))
       .await(2 second) {
-      (ws.checkTextMessage("Checking messages").check(regex(".*").saveAs(viewModelKey)))
+      ws.checkTextMessage("Checking messages").check({
+        jsonPath("$")
+          .transform(s => Try(JsonPatch.parse(s)))
+          .transform((triedPatch) => {
+            triedPatch match {
+              case util.Success(p) => logger.debug("Received patch: " + p.toString())
+              case util.Failure(e) => logger.error("Received bad patch: ", e)
+            }
+            triedPatch
+          })
+          // this is where patch is applied to old vm
+          .transform((triedPatch, session) => triedPatch.map(patch => patch(viewModel(session))))
+          .validate("check view model for exceptions", validateTry(checkLastPatch = true, patchName))
+          .saveAs(viewModelKey)
+      })
     }
   }
 
