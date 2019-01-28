@@ -6,8 +6,6 @@ import gnieh.diffson.sprayJson._
 import io.gatling.commons.validation.{Failure, Success, Validation}
 import io.gatling.core.Predef._
 import io.gatling.core.action.builder.{ActionBuilder, SessionHookBuilder}
-import io.gatling.core.check.DefaultFindCheckBuilder
-import io.gatling.core.check.extractor.string.BodyStringCheckType
 import io.gatling.core.session.{Expression, Session}
 import io.gatling.core.structure.ChainBuilder
 import io.gatling.http.Predef._
@@ -25,8 +23,6 @@ trait PalindromHelper extends StrictLogging {
 
   val viewModelKey: String = "viewModel"
   val viewModel: Session => JsObject = _ (viewModelKey).as[Try[JsObject]].get
-//  val viewModel1: Session => JsArray = _ (viewModelKey).as[Try[JsArray]].get
-//  viewModel1(session).elements.last.asInstanceOf[JsObject].getFields("value").head
   val patchKey: String = "patch"
   val patchEl: Expression[String] = _ (patchKey).validate[String]
   val serverVersionPath: String = "_ver#s"
@@ -40,6 +36,7 @@ trait PalindromHelper extends StrictLogging {
       .header("Accept", "application/json-patch+json")
       .header("X-Referer", sessionEl)
       .check(bodyString
+        //todo: can this be more elegant?
         .transform(s => Try(Try(JsonParser(s)).asInstanceOf[Try[JsArray]].get.elements.last.asJsObject().getFields("value").head))
         .saveAs(viewModelKey)
       )
@@ -80,33 +77,13 @@ trait PalindromHelper extends StrictLogging {
   def updateViewModelId[T: JsonWriter](name: String, lens: Lens[Id], newValueExpression: Expression[T]): ChainBuilder =
     updateViewModelInternal(name, lens, newValueExpression)
 
-  def validatePatch(checkLastPatch:Boolean,
-                    validationRoot: DefaultFindCheckBuilder[BodyStringCheckType, String, String],
-                    patchName: String) =
-
-    validationRoot
-      .transform(s => Try(JsonPatch.parse(s)))
-      .transform((triedPatch) => {
-        triedPatch match {
-          case util.Success(p) => logger.debug("Received patch: "+p.toString())
-          case util.Failure(e) => logger.error("Received bad patch: ",e)
-        }
-        triedPatch
-      })
-      // this is where patch is applied to old vm
-      .transform((triedPatch, session) => triedPatch.map(patch => patch(viewModel(session))))
-      .validate("check view model for exceptions", validateTry(checkLastPatch, patchName))
-      .saveAs(viewModelKey)
-
   def sendChanges(patchName: String): ActionBuilder = {
 
-    //validatePatch(true, ws.checkTextMessage("Checking messages").check(regex(".*")), patchName)
     ws("send changes")
       .sendText(s => {
         logger.debug("sending patch: " + patchEl(s))
         patchEl(s)
       })
-      //.await(1 second)(validatePatch(true, bodyString, patchName))
       .await(2 second) {
       ws.checkTextMessage("Checking messages").check({
         jsonPath("$")
